@@ -3,10 +3,10 @@
 # Sumber: adaptasi skrip equating berpasangan yang telah berhasil
 # Jalankan: shiny::runApp('app_equating_interaktif_TAM_Rasch_filter_baris_NA.R')
 # ============================================================
-required <- c('shiny','TAM','ggplot2','DT')
+required <- c('shiny','shinydashboard','TAM','ggplot2','DT')
 missing <- required[!vapply(required, requireNamespace, logical(1), quietly=TRUE)]
 if(length(missing)) stop('Instal paket: install.packages(c(',paste(sprintf('"%s"',missing),collapse=','),'))')
-library(shiny); library(TAM); library(ggplot2); library(DT)
+library(shiny); library(shinydashboard); library(TAM); library(ggplot2); library(DT)
 
 folder_default <- 'D:/OneDrive/Github/Learning via R/dataset equating'
 form_ids <- sprintf('form%d',201:210)
@@ -224,62 +224,268 @@ run_pair <- function(X,Y,anchors) {
        links=links,transformed=transformed,ctt=ctt)
 }
 
-ui <- fluidPage(
-  titlePanel('Laboratorium Test Equating Rasch (TAM) — Dua Form per Subtes'),
-  sidebarLayout(
-    sidebarPanel(width=3,
+# Pemetaan skor total Y ke metrik skor X menggunakan TCC Rasch.
+# Kalibrasi sudah dilakukan oleh run_pair(); fungsi ini tidak melakukan fit ulang.
+score_lookup_irt <- function(px, py, max_score_y) {
+  theta <- seq(-8, 8, length.out=2001)
+  tcc_x <- rowSums(prob(theta, px))
+  tcc_y <- rowSums(prob(theta, py))
+  scores <- 0:max_score_y
+  # Tangani skor ekstrim melalui pembatasan pada rentang TCC terestimasi.
+  target <- pmax(min(tcc_y), pmin(max(tcc_y), scores))
+  th_y <- approx(tcc_y, theta, xout=target, rule=2, ties='ordered')$y
+  data.frame(score_Y=scores,
+             score_X_equated=approx(theta, tcc_x, xout=th_y, rule=2)$y)
+}
+
+# Mengembalikan satu skor setara untuk setiap peserta Y, tanpa mencampur peserta X.
+score_map <- function(score_y, lookup) {
+  approx(lookup$score_Y, lookup$score_X_equated,
+         xout=score_y, rule=2, ties='ordered')$y
+}
+
+ui <- shinydashboard::dashboardPage(
+  skin = 'blue',
+  dashboardHeader(title = 'Equating Rasch TAM', titleWidth = 310),
+  dashboardSidebar(
+    width = 310,
+    sidebarMenu(
+      id = 'menu_tab',
+      menuItem('1. Metode', tabName = 'metode', icon = icon('book'), selected = TRUE),
+      menuItem('Statistik item', tabName = 'stats', icon = icon('table')),
+      menuItem('Distribusi skor', tabName = 'raw', icon = icon('bar-chart')),
+      menuItem('Parameter butir', tabName = 'parameters', icon = icon('list-alt')),
+      menuItem('Sebelum vs sesudah', tabName = 'comparison', icon = icon('exchange')),
+      menuItem('ICC sebelum equating', tabName = 'icc_before', icon = icon('line-chart')),
+      menuItem('ICC setelah equating', tabName = 'icc_after', icon = icon('line-chart')),
+      menuItem('Distribusi skor setara', tabName = 'equated_scores', icon = icon('bar-chart')),
+      menuItem('Korelasi skor antar metode', tabName = 'score_corr', icon = icon('th')),
+      menuItem('TCC', tabName = 'tcc', icon = icon('area-chart')),
+      menuItem('MM MS SL HB', tabName = 'link', icon = icon('calculator')),
+      menuItem('Ringkasan', tabName = 'summary', icon = icon('clipboard')),
+      menuItem('Panduan', tabName = 'guide', icon = icon('book'))
+    ),
+    div(class = 'sidebar-settings',
+      h4('Pengaturan analisis'),
       textInput('folder','Folder CSV',value=folder_default),
       selectInput('formX','Form acuan (X)',choices=form_ids,selected='form201'),
       selectInput('formY','Form target (Y)',choices=form_ids,selected='form202'),
       selectInput('subtest','Pilih subtes',choices=subtest_options,
                   selected='Subtes 1 (1–30)'),
-      helpText('Setiap subtes dikalibrasi dan disetarakan secara terpisah; anchor dibatasi pada subtes terpilih.'),
-      sliderInput('sample_pct','Persentase sampel dipakai per form',
-                  min=5,max=80,value=5,step=5,post='%' ),
-      helpText('Subsampling acak tanpa pengembalian, seed tetap 2026. Klik Jalankan equating untuk menerapkan ukuran sampel.'),
-      helpText('Model IRT: Rasch (TAM::tam.mml)'),
+      helpText('Setiap subtes dianalisis terpisah; anchor mengikuti subtes.'),
+      sliderInput('sample_pct','Persentase sampel per form',
+                  min=5,max=80,value=5,step=5,post='%'),
+      helpText('Subsampling tanpa pengembalian, seed tetap.'),
       selectInput('approach','Pendekatan yang divisualisasikan',
                   choices=c('Transformasi linier'='Linear',
                             'Fixed item calibration'='Fixed',
                             'Concurrent calibration'='Concurrent',
                             'CTT linear'='CTT'),selected='Linear'),
       conditionalPanel("input.approach == 'Linear'",
-                       selectInput('method','Metode linking',choices=c('MM','MS','SL','HB'),selected='SL')),
-      radioButtons('icc_items','Set item untuk plot ICC',choices=c('Anchor subtes'='anchor','Semua item dalam subtes'='common'),selected='anchor'),
-      checkboxInput('anchor_only','Tampilkan hanya anchor pada grafik parameter',FALSE),
-      actionButton('run','Jalankan equating',class='btn-primary'),
-      hr(),helpText('Klik Jalankan equating setelah mengganti pasangan form. Pilihan pendekatan, metode, dan item dapat diganti tanpa kalibrasi ulang.'),
+                       selectInput('method','Metode linking',
+                                   choices=c('MM','MS','SL','HB'),selected='SL')),
+      radioButtons('icc_items','Set item untuk plot ICC',
+                   choices=c('Anchor subtes'='anchor',
+                             'Semua item dalam subtes'='common'),selected='anchor'),
+      checkboxInput('anchor_only','Hanya anchor pada grafik parameter',FALSE),
+      actionButton('run','Jalankan equating',class='btn-primary btn-block'),
+      helpText('Setelah mengganti form, subtes, atau sampel, klik Jalankan equating.'),
       verbatimTextOutput('status')
-    ),
-    mainPanel(width=9,
-      tabsetPanel(
-        tabPanel('1. Statistik item',
-                 h4('Statistik item anchor — sebelum equating'),DTOutput('statAnchor'),
-                 h4('Statistik seluruh item — sebelum equating'),DTOutput('statAll'),
-                 h4('Statistik item anchor — setelah equating'),DTOutput('statAfter'),
-                 p('Delta = rerata kesukaran Y dikurangi X; r_par = korelasi Pearson parameter b anchor. Pada hasil setelah equating, delta menggunakan Y setelah dan X baseline.')),
-        tabPanel('2. Distribusi skor',plotOutput('rawPlot',height='620px'),DTOutput('rawTable')),
-        tabPanel('3. Parameter butir',
-                 p('Form X tetap sebagai baseline. Hanya form Y yang memiliki kolom sebelum dan sesudah equating. Untuk CTT tidak tersedia parameter item setelah equating.'),
-                 DTOutput('paramTable')),
-        tabPanel('4. Sebelum vs sesudah',plotOutput('paramPlot',height='450px'),DTOutput('diffTable')),
-        tabPanel('5. ICC sebelum equating',plotOutput('iccPrePlot',height='1100px')),
-        tabPanel('6. ICC setelah equating',plotOutput('iccPostPlot',height='1100px')),
-        tabPanel('7. Distribusi skor setara',plotOutput('equatedPlot',height='450px'),DTOutput('conversionTable')),
-        tabPanel('8. TCC',h4('TCC sebelum equating'),plotOutput('tccBefore',height='400px'),h4('TCC setelah equating'),plotOutput('tccAfter',height='400px')),
-        tabPanel('9. MM MS SL HB',DTOutput('linkTable'),plotOutput('linkPlot',height='410px')),
-        tabPanel('10. Ringkasan',DTOutput('summaryTable'),verbatimTextOutput('notes'),DTOutput('missingTable')), 
-        tabPanel('11. Panduan',
-          h4('Cara membaca grafik'),
-          p('Kurva X adalah acuan. Kurva Y sebelum linking masih berada pada skala hasil kalibrasi Y; perbandingan langsung harus ditafsirkan hati-hati. Kurva Y setelah linking berada pada metrik X.'),
-          p('Tab 5 menampilkan ICC sebelum equating. Tab 6 menampilkan ICC setelah equating. Tab 8 menyajikan TCC sebelum di atas dan sesudah di bawah.'),
-          p('Semua tabel dan grafik mengikuti subtes terpilih (1–30, 31–60, atau 61–90). Anchor dibatasi pada subtes tersebut. Pilihan subtes baru berlaku setelah klik Jalankan equating.'),
-          p('Set item untuk ICC dapat dipilih: hanya anchor atau semua nomor item pada subtes. Format grafik menggunakan facet per item.'),
-          p('Concurrent: anchor diperlakukan invariant dalam kalibrasi bersama. Fixed: parameter anchor X dikunci saat kalibrasi Y. Linear: Y dikalibrasi sendiri lalu ditransformasi ke X.'),
-          p('CTT: chained linear equating dengan anchor sebagai penghubung. Ini penyetaraan skor total, bukan transformasi parameter IRT.'),
-          p('Perbandingan skor mentah sebelum/sesudah hanya bermakna setelah dibuat fungsi konversi. Untuk IRT digunakan expected-score true-score equating melalui TCC; CTT menggunakan konversi linear.'),
-          p('Asumsi: posisi kolom anchor sama di seluruh form, CSV tanpa header, respons 0/1/NA. Hanya Rasch dengan TAM; A=1. MM dan MS sama karena linking lokasi saja. Skor deskriptif diprorata jika ada NA; CTT memakai peserta dengan respons lengkap saja.')
-        )
+    )
+  ),
+  dashboardBody(
+    tags$head(tags$style(HTML("
+      .sidebar-settings { padding: 14px 14px 24px; color: #eee; }
+      .sidebar-settings h4 { font-weight: 600; color: #fff; }
+      .sidebar-settings .help-block { color: #bdc8cf; font-size: 11px; }
+      .sidebar-settings .control-label { color: #f5f5f5; }
+      .sidebar-settings .shiny-input-container { width: 100%; }
+      .sidebar-settings .irs-grid-text, .sidebar-settings .irs-min,
+      .sidebar-settings .irs-max { color: #d2dce3; }
+      .content-wrapper { background: #f4f6f9; }
+      .box-body { overflow-x: auto; }
+    "))),
+    tabItems(
+      tabItem(tabName='metode',
+        fluidRow(box(width=12, title='Panduan proses Test Equating dalam aplikasi',
+          status='primary', solidHeader=TRUE,
+          p('Aplikasi menerapkan model Rasch dikotomis dengan paket TAM. Form X adalah acuan (baseline), sedangkan Form Y disetarakan ke metrik X. Semua prosedur menggunakan subtes dan sampel yang dipilih pengguna.'),
+          tags$ol(
+            tags$li('Pilih Form X dan Form Y yang berbeda (misalnya form201 dan form204).'),
+            tags$li('Pilih Subtes 1 (01–30), Subtes 2 (31–60), atau Subtes 3 (61–90).'),
+            tags$li('Ambil hanya butir dari subtes terpilih; anchor ditentukan berdasarkan nomor butir yang termasuk di dalam subtes.'),
+            tags$li('Baca CSV tanpa header dan verifikasi nilai respons 0/1 atau NA. Baris yang seluruh responsnya NA dihapus, sedangkan NA parsial dipertahankan.'),
+            tags$li('Ambil sampel acak tanpa pengembalian pada tiap form: 5%–80%, default 5%; seed X=2026 dan Y=2027.'),
+            tags$li('Lakukan kalibrasi dan equating untuk keempat pendekatan, lalu tampilkan hasil berdasarkan pendekatan terpilih.')
+          ),
+          p(tags$b('Anchor per subtes: '),
+            'Subtes 1: 02, 05, 09, 13, 16, 20, 24, 29 (8 butir); ',
+            'Subtes 2: 33, 38, 43, 47, 48, 50, 52 (7 butir); ',
+            'Subtes 3: 66, 67, 68, 73, 83, 84, 85, 86 (8 butir).'),
+          p(tags$b('Prinsip Rasch: '),
+            tags$code('P(theta) = 1 / (1 + exp(-(theta - b)))'),
+            '. Parameter a bernilai 1; penyamaan skala dilakukan melalui pergeseran lokasi B (A = 1).')
+        )),
+        fluidRow(box(width=12,title='1. Transformasi linier (MM, MS, SL, HB)',
+          status='primary',solidHeader=TRUE,
+          tags$ol(
+            tags$li('Kalibrasi Form X dan Form Y secara terpisah menggunakan TAM::tam.mml().'),
+            tags$li('Ekstrak parameter kesukaran b setiap butir melalui hasil TAM (fit$xsi$xsi).'),
+            tags$li('Pasangkan nilai kesukaran anchor yang sama pada Form X dan Y berdasarkan ID butir, bukan berdasarkan urutan baris.'),
+            tags$li('Hitung konstanta transformasi B menggunakan MM, MS, SL, atau HB; dalam aplikasi Rasch A selalu 1.'),
+            tags$li('Transformasikan SELURUH parameter kesukaran Y: b_Y_setara = b_Y_sebelum + B. Parameter X tidak berubah.'),
+            tags$li('Bandingkan b, statistik anchor, ICC dan TCC sebelum vs sesudah penyetaraan.'),
+            tags$li('Untuk skor peserta Y, hitung TCC Y dan TCC X pada theta yang sama; gunakan inversi TCC Y dan pemetaan TCC X untuk memperoleh skor setara.')
+          ),
+          tags$h4('Cara penentuan konstanta B'),
+          tags$ul(
+            tags$li(tags$b('MM (Mean–Mean): '),tags$code('B = mean(b_anchor_X) - mean(b_anchor_Y)')),
+            tags$li(tags$b('MS (Mean–Sigma): '),'di kode Rasch ini A dipaksa 1 dan B dihitung dari selisih rerata; jadi hasil MS identik dengan MM, bukan estimasi rasio SD bebas.'),
+            tags$li(tags$b('SL (Stocking–Lord): '),'optimasi B yang meminimalkan jumlah kuadrat selisih TCC anchor X dan anchor Y setelah pergeseran, pada grid theta -4 sampai 4.'),
+            tags$li(tags$b('HB (Haebara): '),'optimasi B yang meminimalkan jumlah kuadrat selisih probabilitas benar tiap anchor pada grid theta yang sama.')
+          ),
+          p(tags$b('Rumus transformasi: '),tags$code('b_Y_setara = b_Y + B; A = 1.')),
+          p('ICC/TCC sebelum menggunakan parameter terpisah; ICC/TCC setelah menggunakan parameter Y yang telah digeser ke skala X.')
+        )),
+        fluidRow(box(width=12,title='2. Fixed item calibration',
+          status='primary',solidHeader=TRUE,
+          tags$ol(
+            tags$li('Kalibrasi Form X secara terpisah dengan TAM::tam.mml() sebagai baseline.'),
+            tags$li('Ekstrak b anchor dari hasil kalibrasi X dan identifikasi posisi anchor yang sesuai dalam data Y.'),
+            tags$li('Masukkan indeks anchor serta b_X ke argumen TAM::tam.mml(xsi.fixed = cbind(indeks, b_X)).'),
+            tags$li('Kalibrasi Form Y dengan parameter anchor yang dikunci; estimasi parameter butir non-anchor Y dilakukan pada skala yang ditentukan anchor X.'),
+            tags$li('Pertahankan b_X sebagai baseline; gunakan parameter dari hasil fixed calibration sebagai b_Y_setara.'),
+            tags$li('Bentuk ICC dan TCC setelah equating dari parameter Y hasil fixed; untuk skor setara gunakan inversi TCC dan TCC X.')
+          ),
+          p(tags$b('Penting: '),'ICC anchor X dan Y yang telah dikunci secara konseptual berimpit. Kesamaan tersebut merupakan akibat penguncian, bukan pengujian bahwa anchor bebas DIF.')
+        )),
+        fluidRow(box(width=12,title='3. Concurrent calibration',
+          status='primary',solidHeader=TRUE,
+          tags$ol(
+            tags$li('Pisahkan setiap butir non-anchor X dan Y dengan nama berbeda (X_ dan Y_), tetapi pertahankan ID anchor yang sama.'),
+            tags$li('Gabungkan peserta X dan Y ke satu matriks respons. Kolom butir yang tidak diberikan pada suatu form bernilai NA terencana (planned missingness).'),
+            tags$li('Buat indikator group: 1 untuk peserta X dan 2 untuk peserta Y; hapus baris gabungan yang seluruh responsnya NA jika ada.'),
+            tags$li('Estimasi sekaligus parameter butir menggunakan TAM::tam.mml(resp=joined, group=grp). ID anchor bersama memiliki satu parameter dalam matriks gabungan.'),
+            tags$li('Pisahkan kembali parameter untuk butir Form X dan Y; gunakan parameter anchor bersama dari estimasi concurrent.'),
+            tags$li('Pada tampilan parameter/ICC/TCC setelah equating, geser parameter Y concurrent dengan selisih rerata b anchor X-baseline vs X-concurrent untuk menyamakan titik asal skala.'),
+            tags$li('Konversi skor peserta Y untuk panel korelasi menggunakan pasangan parameter X dan Y hasil concurrent serta pemetaan TCC.')
+          ),
+          p(tags$b('Perbedaan utama: '),'Concurrent tidak mengestimasi X dan Y sebagai dua kalibrasi terpisah yang baru di-link; butir anchor menjadi parameter bersama dalam satu kalibrasi gabungan.')
+        )),
+        fluidRow(box(width=12,title='4. Classical Test Equating (CTT)',
+          status='primary',solidHeader=TRUE,
+          tags$ol(
+            tags$li('Gunakan hanya peserta dengan respons lengkap pada masing-masing form untuk perhitungan CTT.'),
+            tags$li('Hitung skor total subtes T_X dan T_Y dengan menjumlahkan respons benar tiap peserta.'),
+            tags$li('Hitung skor anchor A_X dan A_Y untuk peserta masing-masing form.'),
+            tags$li('Hitung mean dan simpangan baku skor total serta skor anchor di kedua form.'),
+            tags$li('Hitung slope dan intercept konversi sesuai implementasi chained linear yang ada pada fungsi ctt_equate().'),
+            tags$li('Buat tabel konversi seluruh skor total mungkin, dari 0 sampai jumlah butir Y, dengan persamaan X_setara = intercept + slope * skor_Y.'),
+            tags$li('Gunakan tabel konversi itu untuk distribusi skor setara serta korelasi skor peserta Y yang memiliki data lengkap.')
+          ),
+          p(tags$b('Rumus yang digunakan kode:')),
+          tags$p(tags$code('slope = SD(Tx)/SD(Ax) * SD(Ay)/SD(Ty)')),
+          tags$p(tags$code('intercept = mean(Tx) + SD(Tx)/SD(Ax) * (mean(Ay) - mean(Ax)) - slope * mean(Ty)')),
+          p(tags$b('Catatan: '),'CTT hanya menyetarakan skor total, bukan parameter butir IRT. Karena itu tidak ada parameter b maupun ICC/TCC setelah equating yang dihasilkan khusus dari CTT.')
+        )),
+        fluidRow(box(width=12,title='Cara membaca hasil dan batasan interpretasi',
+          status='primary',solidHeader=TRUE,
+          tags$ul(
+            tags$li(tags$b('Statistik item: '),'rerata, SD, selisih rerata (delta), dan korelasi b anchor dari X serta Y.'),
+            tags$li(tags$b('Parameter dan ICC: '),'X tetap baseline; Y disajikan sebelum dan sesudah equating sesuai pendekatan IRT yang dipilih.'),
+            tags$li(tags$b('TCC: '),'grafik atas memakai kalibrasi terpisah, grafik bawah memakai hasil pendekatan IRT yang dipilih.'),
+            tags$li(tags$b('Korelasi skor: '),'dibandingkan untuk peserta Y yang sama; skor setelah equating merupakan fungsi skor sebelum equating sehingga korelasi tinggi bukan bukti akurasi.'),
+            tags$li(tags$b('Tabel: '),'angka numerik ditampilkan tiga desimal; komputasi internal tetap memakai presisi penuh.')
+          ),
+          p('Karena data X dan Y berasal dari peserta berbeda, korelasi antarskor X dan Y bukan korelasi berpasangan antarorang. Kesimpulan tentang kualitas equating memerlukan pemeriksaan stabilitas anchor dan diagnostik model, bukan hanya kemiripan kurva atau korelasi skor.'),
+          p(tags$b('Khusus concurrent: '),'matriks gabungan memang mengandung NA terencana; NA itu tidak boleh diganti 0.')
+        ))
+      ),
+      tabItem(tabName='stats',
+        fluidRow(box(width=12,title='Statistik item anchor — sebelum equating',
+                     status='primary',solidHeader=TRUE,DTOutput('statAnchor'))),
+        fluidRow(box(width=12,title='Statistik seluruh item — sebelum equating',
+                     status='primary',solidHeader=TRUE,DTOutput('statAll'))),
+        fluidRow(box(width=12,title='Statistik item anchor — setelah equating',
+                     status='primary',solidHeader=TRUE,DTOutput('statAfter'),
+                     p('Delta = rerata kesukaran Y dikurangi X; r_par = korelasi Pearson parameter b anchor. Setelah equating, delta menggunakan Y setelah dan X baseline.')))
+      ),
+      tabItem(tabName='raw',
+        fluidRow(box(width=12,title='Distribusi skor mentah',status='primary',
+                     solidHeader=TRUE,plotOutput('rawPlot',height='620px'))),
+        fluidRow(box(width=12,title='Ringkasan skor',DTOutput('rawTable')))
+      ),
+      tabItem(tabName='parameters',
+        fluidRow(box(width=12,title='Parameter butir X dan Y',status='primary',
+                     solidHeader=TRUE,
+                     p('Form X tetap baseline. Hanya parameter Y yang memiliki kolom sebelum dan sesudah equating. CTT tidak menghasilkan parameter item setelah equating.'),
+                     DTOutput('paramTable')))
+      ),
+      tabItem(tabName='comparison',
+        fluidRow(box(width=12,title='Perbandingan parameter',status='primary',
+                     solidHeader=TRUE,plotOutput('paramPlot',height='450px'))),
+        fluidRow(box(width=12,title='Selisih parameter',DTOutput('diffTable')))
+      ),
+      tabItem(tabName='icc_before',
+        fluidRow(box(width=12,title='ICC form X dan Y sebelum equating',
+                     status='primary',solidHeader=TRUE,
+                     plotOutput('iccPrePlot',height='1100px')))
+      ),
+      tabItem(tabName='icc_after',
+        fluidRow(box(width=12,title='ICC form X dan Y setelah equating',
+                     status='primary',solidHeader=TRUE,
+                     plotOutput('iccPostPlot',height='1100px')))
+      ),
+      tabItem(tabName='equated_scores',
+        fluidRow(box(width=12,title='Distribusi skor setara',status='primary',
+                     solidHeader=TRUE,plotOutput('equatedPlot',height='450px'))),
+        fluidRow(box(width=12,title='Konversi skor',DTOutput('conversionTable')))
+      ),
+      tabItem(tabName='score_corr',
+        fluidRow(box(width=12,title='Scatter plot skor Y sebelum vs setelah equating — seluruh metode',
+          status='primary',solidHeader=TRUE,
+          p('Satu panel per metode: MM, MS, SL, HB, Fixed, Concurrent, dan CTT. Sumbu X adalah skor mentah Form Y; sumbu Y adalah skor setara pada metrik Form X.'),
+          plotOutput('scoreCorrPlot',height='940px'))),
+        fluidRow(box(width=12,title='Korelasi skor mentah Y dengan skor setara',
+          status='primary',solidHeader=TRUE,DTOutput('scoreCorrSummary'))),
+        fluidRow(box(width=12,title='Matriks korelasi skor antar metode (Pearson)',
+          status='primary',solidHeader=TRUE,DTOutput('scoreCorrMatrix'))),
+        fluidRow(box(width=12,title='Catatan interpretasi',
+          p('Korelasi dihitung antarskor pada peserta Form Y yang sama, bukan antara peserta Form X dan Form Y yang berbeda.'),
+          p('Equating merupakan pemetaan deterministik skor mentah ke skor setara. Korelasi yang sangat tinggi (sering mendekati 1) adalah konsekuensi pemetaan monoton; tidak dengan sendirinya membuktikan bahwa suatu metode lebih akurat.'),
+          p('CTT linear biasanya memiliki r = 1 terhadap skor awal ketika kemiringan positif. MM dan MS Rasch juga dapat memberi hasil identik. Bandingkan pula besarnya selisih skor antarmetode.'),
+          p('Untuk CTT, skor setara hanya dihitung pada peserta dengan respons lengkap. Korelasi menggunakan observasi berpasangan yang tersedia.')))
+      ),
+      tabItem(tabName='tcc',
+        fluidRow(box(width=12,title='TCC sebelum equating',status='primary',
+                     solidHeader=TRUE,plotOutput('tccBefore',height='400px'))),
+        fluidRow(box(width=12,title='TCC setelah equating',status='primary',
+                     solidHeader=TRUE,plotOutput('tccAfter',height='400px')))
+      ),
+      tabItem(tabName='link',
+        fluidRow(box(width=12,title='Konstanta MM, MS, SL dan HB',
+                     status='primary',solidHeader=TRUE,DTOutput('linkTable'))),
+        fluidRow(box(width=12,title='Perbandingan konstanta linking',
+                     plotOutput('linkPlot',height='410px')))
+      ),
+      tabItem(tabName='summary',
+        fluidRow(box(width=12,title='Status analisis',status='primary',
+                     solidHeader=TRUE,DTOutput('summaryTable'))),
+        fluidRow(box(width=12,title='Catatan dan diagnostik',
+                     verbatimTextOutput('notes'),DTOutput('missingTable')))
+      ),
+      tabItem(tabName='guide',
+        fluidRow(box(width=12,title='Panduan interpretasi',status='primary',
+          solidHeader=TRUE,
+          p('Form X adalah acuan. Form Y sebelum linking masih pada skala hasil kalibrasi terpisah; perbandingan langsung harus ditafsirkan hati-hati. Setelah equating, Y berada pada metrik X.'),
+          p('ICC sebelum dan sesudah berada pada dua menu. TCC sebelum dan sesudah ditampilkan bertumpuk dalam menu TCC.'),
+          p('Semua tabel dan grafik mengikuti subtes terpilih: 1–30, 31–60, atau 61–90. Anchor dibatasi pada subtes tersebut.'),
+          p('Concurrent: anchor bersama dalam kalibrasi gabungan; Fixed: parameter anchor X dikunci ketika mengkalibrasi Y; Linear: Y ditransformasikan ke metrik X menggunakan MM, MS, SL, atau HB.'),
+          p('CTT: chained linear equating skor total melalui anchor; tidak menghasilkan parameter item IRT setelah equating.'),
+          p('Data CSV tanpa header, respons 0/1/NA. Model Rasch dengan TAM, A=1. Skor deskriptif diprorata apabila ada NA; CTT memakai respons lengkap.'),
+          p('Tab Korelasi Skor menyajikan scatter plot dan matriks korelasi skor Y sebelum serta setelah setiap metode. Korelasi tinggi bukan ukuran akurasi equating.'),
+          p('Pemilihan form, subtes, dan persentase sampel baru dihitung setelah klik Jalankan equating.')
+        ))
       )
     )
   )
@@ -567,6 +773,105 @@ server <- function(input,output,session) {
     tcc_figure(p$x,p$y,r$formX,r$formY,
                'TCC setelah equating',paste('Metode:',lbl,'— pada metrik X'))
   })
+  # Skor sebelum/ sesudah equating dari seluruh metode untuk peserta Y yang sama.
+  # CTT memakai hanya peserta dengan respons lengkap; metode IRT memakai
+  # skor tampilan prorata jika ada respons kosong.
+  scores_by_method <- reactive({
+    r <- safe_result()
+    raw_y <- score_display(r$Y)
+    n <- length(raw_y)
+    out <- data.frame(Sebelum=raw_y)
+    max_y <- ncol(r$Y)
+
+    for (method in c('MM','MS','SL','HB')) {
+      param_y <- r$transformed[[method]]
+      if (!is.null(param_y)) {
+        lk <- score_lookup_irt(r$parX, param_y, max_y)
+        out[[method]] <- score_map(raw_y, lk)
+      } else {
+        out[[method]] <- rep(NA_real_, n)
+      }
+    }
+
+    if (!is.null(r$fixed$par)) {
+      lk <- score_lookup_irt(r$parX, r$fixed$par, max_y)
+      out[['Fixed']] <- score_map(raw_y, lk)
+    } else out[['Fixed']] <- rep(NA_real_, n)
+
+    if (!is.null(r$concurrent$X) && !is.null(r$concurrent$Y)) {
+      lk <- score_lookup_irt(r$concurrent$X, r$concurrent$Y, max_y)
+      out[['Concurrent']] <- score_map(raw_y, lk)
+    } else out[['Concurrent']] <- rep(NA_real_, n)
+
+    if (!is.null(r$ctt$tab)) {
+      # Rumus CTT dikalibrasi dengan complete cases saja.
+      lk <- r$ctt$tab
+      ctt_scores <- score_map(rowSums(r$Y, na.rm=FALSE), lk)
+      out[['CTT']] <- ctt_scores
+    } else out[['CTT']] <- rep(NA_real_, n)
+    out
+  })
+
+  corr_methods <- c('MM','MS','SL','HB','Fixed','Concurrent','CTT')
+  # Rekap Pearson dilakukan setelah memastikan masing-masing variabel bervariasi.
+  safe_cor <- function(x,y) {
+    good <- is.finite(x) & is.finite(y)
+    if (sum(good)<3L || sd(x[good])==0 || sd(y[good])==0) return(NA_real_)
+    cor(x[good],y[good],method='pearson')
+  }
+  output$scoreCorrPlot <- renderPlot({
+    d <- scores_by_method()
+    parts <- lapply(corr_methods, function(m) {
+      data.frame(Sebelum=d$Sebelum, Setelah=d[[m]], Metode=m)
+    })
+    z <- do.call(rbind,parts)
+    z <- z[is.finite(z$Sebelum)&is.finite(z$Setelah),,drop=FALSE]
+    validate(need(nrow(z)>0,'Tidak ada skor setara yang dapat dibandingkan.'))
+    # Satu titik untuk setiap nilai skor yang unik; luas titik = jumlah peserta.
+    corm <- vapply(corr_methods,function(m) safe_cor(d$Sebelum,d[[m]]),numeric(1))
+    lab <- ifelse(is.finite(corm), sprintf('r = %.3f',corm), 'r = NA')
+    names(lab) <- corr_methods
+    z$Metode <- factor(z$Metode,levels=corr_methods,
+                       labels=paste(corr_methods,lab[corr_methods],sep=' | '))
+    ggplot(z,aes(Sebelum,Setelah)) +
+      geom_count(colour='#1670A8',alpha=.75) +
+      geom_smooth(method='lm',formula=y~x,se=FALSE,color='#C44E52',linewidth=.7) +
+      facet_wrap(~Metode, ncol=3, scales='free_y', drop=TRUE) +
+      scale_size_area(max_size=7,name='Jumlah peserta') +
+      theme_bw(base_size=11) +
+      theme(strip.text=element_text(face='bold'),legend.position='bottom') +
+      labs(x='Skor total Y sebelum equating',y='Skor setara Y (metrik X)',
+           subtitle='Tiap panel menggunakan peserta Form Y yang sama; titik bertumpuk menunjukkan frekuensi')
+  })
+  output$scoreCorrSummary <- renderDT({
+    d <- scores_by_method()
+    a <- lapply(corr_methods,function(m) {
+      good <- is.finite(d$Sebelum)&is.finite(d[[m]])
+      data.frame(Metode=m,N=sum(good),
+                 r_Pearson=safe_cor(d$Sebelum,d[[m]]),
+                 Mean_sebelum=if(any(good)) mean(d$Sebelum[good]) else NA_real_,
+                 Mean_setelah=if(any(good)) mean(d[[m]][good]) else NA_real_,
+                 Mean_selisih=if(any(good)) mean(d[[m]][good]-d$Sebelum[good]) else NA_real_,
+                 RMSE_selisih=if(any(good)) sqrt(mean((d[[m]][good]-d$Sebelum[good])^2)) else NA_real_)
+    })
+    show_table(do.call(rbind,a),pageLength=10,dom='t')
+  })
+  output$scoreCorrMatrix <- renderDT({
+    d <- scores_by_method()
+    good_cols <- names(d)[vapply(d,function(v) sum(is.finite(v)) >= 3 &&
+                                  sd(v[is.finite(v)])>0,logical(1))]
+    validate(need(length(good_cols)>1,'Variasi skor tidak mencukupi untuk matriks korelasi.'))
+    dm <- d[,good_cols,drop=FALSE]
+    mat <- cor(dm, use='pairwise.complete.obs', method='pearson')
+    # Sajikan semua metode; metode yang gagal ditampilkan sebagai NA.
+    labels <- names(d)
+    full <- matrix(NA_real_,nrow=length(labels),ncol=length(labels),
+                   dimnames=list(labels,labels))
+    full[good_cols,good_cols] <- mat
+    tab <- data.frame(Variabel=labels,full,check.names=FALSE,row.names=NULL)
+    show_table(tab,pageLength=12,dom='t')
+  })
+
   output$linkTable <- renderDT({show_table(safe_result()$links,dom='t')})
   output$linkPlot <- renderPlot({
     r <- safe_result(); d <- r$links

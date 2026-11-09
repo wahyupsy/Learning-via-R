@@ -1,2 +1,0 @@
-
-shiny::runApp("app_equating_201_210.R")
